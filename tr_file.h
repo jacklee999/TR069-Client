@@ -13,6 +13,9 @@
  * return 1 when yes,or return 0
  * */
 int judge_absolute_path(const char* path);
-int int_arg(int argc,char **argv,char *P_workspace,int size);
+/*
+ * initial workspace
+ * */
+int init_arg(int argc,char **argv,char *P_workspace,int size);
 
 #endif /* TR_FILE_H_ */
