@@ -35,5 +35,6 @@
 #define ERROR _ERROR, _A_
 
 int start_log();
+int set_log_conf(const char *name, const char *value);
 void tr_log(int level, const char *file, int line, const char *function, const char *fmt, ...);
 #endif /* TR_LOG_H_ */

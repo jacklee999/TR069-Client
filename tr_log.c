@@ -7,10 +7,14 @@
 #include <stdio.h>
 #include <time.h>
 #include <stdarg.h>
+#include <unistd.h>
+#include <string.h>
+#include <ctype.h>
 
 #include "tr_log.h"
+#include "tr_file.h"
 
-#define DEFAULT_LIMIT 1*1024*1024
+#define DEFAULT_LIMIT 1*1024
 typedef enum{
 	TO_BOTH,
 	TO_SCREEN,
@@ -20,7 +24,7 @@ typedef enum{
 
 typedef struct{
 	FILE *fp;
-	char file_name[128];
+	char file_name[FILE_PATH_LEN];
 
 	int rotate;//if rotate==1,auto rotate when the log file reach the limited size,or not rotate
 	int backup;//the number of backup log files
@@ -34,7 +38,7 @@ typedef struct{
 static LogConf log_conf={
 		NULL,
 		"tr.log",
-		0,
+		1,
 		5,
 		DEFAULT_LIMIT,
 		0,
@@ -56,7 +60,7 @@ int start_log()
 	int res=0;
 	if(log_conf.mode==TO_BOTH || log_conf.mode==TO_FILE)
 	{
-		log_conf.fp=fopen(log_conf.file_name,"a");
+		log_conf.fp=tr_fopen(log_conf.file_name,"a");
 		if(log_conf.fp==NULL){
 			log_conf.mode=TO_SCREEN;
 			tr_log(WARNING,"open log file:%s failed!",log_conf.file_name);
@@ -67,7 +71,73 @@ int start_log()
 	}
 	return res;
 }
-
+int set_log_conf(const char *name, const char *value)
+{
+	if(strcmp(name,"LOG_FILE_NAME")==0)
+	{
+		strcpy(log_conf.file_name,value);
+	}
+	else if(strcmp(name,"LOG_ROTATE")==0)
+	{
+		if(strcmp(value,"1")==0||strcasecmp(value,"true")==0){
+			log_conf.rotate=1;
+		}else if(strcmp(value,"0")==0||strcasecmp(value,"false")==0){
+			log_conf.rotate=0;
+		}
+	}
+	else if(strcmp(name,"LOG_BACKUP")==0)
+	{
+		log_conf.backup=atoi(value);
+		if(log_conf.backup<1){
+			fprintf(stderr,"Invalid log_backup:%s!\n",value);
+			log_conf.backup=1;
+		}
+	}
+	else if(strcmp(name,"LOG_LIMIT")==0)
+	{
+		int num=atoi(value);
+		if(num>0)
+		{
+			char *unit=value;
+			while(*unit!='\0'&&isdigit(*unit))
+				unit++;
+			if(strcasecmp(unit,"kb")==0){
+				log_conf.limit=num*1024;
+			}else if(strcasecmp(unit,"mb")==0){
+				log_conf.limit=num*1024*1024;
+			}else if(strcasecmp(unit,"gb")==0){
+				log_conf.limit=num*1024*1024;
+			}else{
+				fprintf(stderr,"Invalid unit:%s\n",unit);
+			}
+		}
+	}
+	else if(strcmp(name,"LOG_LEVEL")==0)
+	{
+		if(strcasecmp(value,"DEBUG")==0){
+			log_conf.level=_DEBUG;
+		}else if(strcasecmp(value,"NOTICE")==0){
+			log_conf.level=_NOTICE;
+		}else if(strcasecmp(value,"WARNING")==0){
+			log_conf.level=_WARNING;
+		}else if(strcasecmp(value,"ERROR")==0){
+			log_conf.level=_ERROR;
+		}
+	}
+	else if(strcmp(name,"LOG_MODE")==0)
+	{
+		if(strcasecmp(value,"TO_BOTH")==0){
+			log_conf.mode=TO_BOTH;
+		}else if(strcasecmp(value,"TO_SCREEN")==0){
+			log_conf.mode=TO_SCREEN;
+		}else if(strcasecmp(value,"TO_FILE")==0){
+			log_conf.mode=TO_FILE;
+		}else if(strcasecmp(value,"TO_NONE")==0){
+			log_conf.mode=TO_NONE;
+		}
+	}
+	return 0;
+}
 void tr_log(int level, const char *file, int line, const char *function, const char *fmt, ...)
 {
 	if(level>=log_conf.level && log_conf.mode !=TO_NONE)
@@ -80,9 +150,9 @@ void tr_log(int level, const char *file, int line, const char *function, const c
 		time_t current_time=time(NULL);
 		tm=localtime(&current_time);
 		//snprintf(date,strlen(date)-1,"%d-%d %d:%d:%d",tm->tm_mon+1,tm->tm_mday,tm->tm_hour,tm->tm_min,tm->tm_sec);
-		strftime(date,sizeof(date)-1,"%b %e %T",tm);
+		strftime(date,sizeof(date),"%b %e %T",tm);
 		va_start(vp,fmt);
-		vsnprintf(buf,sizeof(buf)-1,fmt,vp);
+		vsnprintf(buf,sizeof(buf),fmt,vp);
 		va_end(vp);
 		if(log_conf.mode==TO_SCREEN || log_conf.mode==TO_BOTH)
 		{
@@ -91,7 +161,7 @@ void tr_log(int level, const char *file, int line, const char *function, const c
 		}
 		if(log_conf.fp!=NULL)
 		{
-			num=fprintf(log_conf.fp,"[%s] %s()@%s:line %d  %s\n",date,function,file,line,buf);
+			num=fprintf(log_conf.fp,"[%s] %s %s()@%s:line %d  %s\n",date,log_descriptions[level].nocolor,function,file,line,buf);
 			if(num>0)
 			{
 				fflush(log_conf.fp);
@@ -99,8 +169,27 @@ void tr_log(int level, const char *file, int line, const char *function, const c
 				if(log_conf.current>=log_conf.limit)
 				{
 					fclose(log_conf.fp);
+					log_conf.fp=NULL;
 					if(log_conf.rotate==1){
-
+						int i;
+						char old_name[FILE_PATH_LEN];
+						char new_name[FILE_PATH_LEN];
+						for(i=log_conf.backup;i>=1;i--)
+						{
+							snprintf(old_name,sizeof(old_name),"%s.bak.%d",log_conf.file_name,i);
+							snprintf(new_name,sizeof(new_name),"%s.bak.%d",log_conf.file_name,i+1);
+							if(tr_exist(old_name)==0){
+								continue;
+							}else{
+								if(i==log_conf.backup){
+									tr_remove(old_name);
+									continue;
+								}
+								tr_rename(old_name,new_name);
+							}
+						}
+						snprintf(new_name,sizeof(new_name),"%s.bak.1",log_conf.file_name);
+						tr_rename(log_conf.file_name,new_name);
 					}else{
 						tr_remove(log_conf.file_name);
 					}
